@@ -66,7 +66,7 @@ int main(int argc, char *argv[])
 
     IUnknownPtr unk(ptr);
     ITestPtr ptrBack(unk);
-    // ITest4Ptr ptr4(ptr);
-    // assert(!ptr4);
+    ITest4Ptr ptr4(ptr);
+    assert(!ptr4);
     return 0;
 }
