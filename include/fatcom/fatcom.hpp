@@ -283,15 +283,14 @@ using IUnknownPtr = InterfacePtr<IUnknown>;
 
 }
 
-#define REGISTER_INFO(uuid, T, Parent, v, iface, vc) \
-    template<> \
-    inline constexpr fatcom::FatInfo<v, Parent, iface, vc> \
-    fatcom::InfoOf<T>{ParseIID(uuid)}
+#define FAT_UUID(T, uuid) \
+struct T; \
+constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
 
-#define FAT_INTERFACE(T, uuid, ...) \
+#define FAT_INTERFACE(T, ...) \
     struct T; \
     struct T##_VTable; struct _IFace##T; struct _VTablePopulator##T; \
-    REGISTER_INFO(uuid, T, void, T##_VTable, _IFace##T, _VTablePopulator##T); \
+    REGISTER_INFO(T, void, T##_VTable, _IFace##T, _VTablePopulator##T); \
     struct T##_VTable : fatcom::IUnknown_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { MAKE_DESCRIBE(__VA_ARGS__)  } \
     struct _IFace##T : fatcom::_IFaceIUnknown { using _VTBL = T##_VTable; MAKE_IFACE(__VA_ARGS__) }; \
@@ -303,10 +302,10 @@ using IUnknownPtr = InterfacePtr<IUnknown>;
     using T##Ptr = fatcom::InterfacePtr<T>;
 
 
-#define FAT_INTERFACE_INHERIT(Parent, T, uuid, ...) \
+#define FAT_INTERFACE_INHERIT(Parent, T, ...) \
     struct T; struct Parent; \
     struct T##_VTable; struct _IFace##T; struct _VTablePopulator##T; \
-    REGISTER_INFO(uuid, T, Parent, T##_VTable, _IFace##T, _VTablePopulator##T); \
+    REGISTER_INFO(T, Parent, T##_VTable, _IFace##T, _VTablePopulator##T); \
     struct T##_VTable : Parent##_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { PARENT(Parent##_VTable); MAKE_DESCRIBE(__VA_ARGS__)  } \
     struct _IFace##T : _IFace##Parent { using _VTBL = T##_VTable; MAKE_IFACE(__VA_ARGS__) }; \
@@ -339,6 +338,12 @@ using IUnknownPtr = InterfacePtr<IUnknown>;
 // + Creator of concrete func ptrs
 
 /////////
+
+#define REGISTER_INFO(T, Parent, v, iface, vc) \
+template<> \
+inline constexpr fatcom::FatInfo<v, Parent, iface, vc> \
+fatcom::InfoOf<T>{T##_UUID}
+
 
 #define _DOCHOOSE_1_OR_1(prefix) BOOST_PP_CAT(prefix, 1)
 #define _DOCHOOSE_1_OR_MORE(prefix) BOOST_PP_CAT(prefix, MORE)

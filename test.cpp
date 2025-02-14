@@ -2,25 +2,22 @@
 #include "fatcom/fatcom.hpp"
 #include <cassert>
 
-FAT_INTERFACE(
-    ITest, "00112233-4455-6677-8899-aabbccddeeff",
-    (bool, method1, (int)x, (int)y)
-    )
+FAT_UUID(ITest, "00112233-4455-6677-8899-aabbccddeeff")
+FAT_INTERFACE(ITest,
+              (bool, method1, (int)x, (int)y))
 
-FAT_INTERFACE(
-    ITest2, "00212233-4455-6677-8899-aabbccddeeff",
-    (void, method2, (int)x)
-    )
+FAT_UUID(ITest2, "00212233-4455-6677-8899-aabbccddeeff")
+FAT_INTERFACE(ITest2,
+              (void, method2, (int)x),
+              (void, kek))
 
-FAT_INTERFACE(
-    ITest4, "01212233-4455-6677-8899-aabbccddeeff",
-    (void, method4)
-    )
+FAT_UUID(ITest4, "01212233-4455-6677-8899-aabbccddeeff")
+FAT_INTERFACE(ITest4,
+              (void, method4))
 
-FAT_INTERFACE_INHERIT(
-    ITest2, ITest3, "00312233-4455-6677-8899-aabbccddeeff",
-    (void, method3, (bool)x)
-    )
+FAT_UUID(ITest3, "00312233-4455-6677-8899-aabbccddeeff")
+FAT_INTERFACE_INHERIT(ITest2, ITest3,
+                      (void, method3, (bool)x))
 
 struct Victim {
     FAT_IMPLEMENTS(ITest, ITest3);
