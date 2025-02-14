@@ -406,9 +406,14 @@ constexpr auto* MakeImpl(R(C::*)(Args...)) {
 
 }
 
-// check method exists and correct signature
-#define ADD_CONCRETE_PTR_DO(ret, name, ...) \
+#define ADD_CONCRETE_PTR_DO_1(ret, name) \
+    (void)[](){ (void)((_User*)42)->name(); }; \
     _res.name = fatcom::detail::MakeImpl<&_User::name>(&_User::name);
+// check method exists and correct signature
+#define ADD_CONCRETE_PTR_DO_MORE(ret, name, ...) \
+    (void)[](METHOD_SIG(__VA_ARGS__)){ (void)((_User*)42)->name(METHOD_CALL(__VA_ARGS__)); }; \
+    _res.name = fatcom::detail::MakeImpl<&_User::name>(&_User::name);
+#define ADD_CONCRETE_PTR_DO(ret, name, ...) _CHOOSE_1_OR_MORE(ADD_CONCRETE_PTR_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
 #define ADD_CONCRETE_PTR(_, __, method) ADD_CONCRETE_PTR_DO method
 #define MAKE_CONCRETES(...) \
     BOOST_PP_SEQ_FOR_EACH(ADD_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
