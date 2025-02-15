@@ -22,10 +22,19 @@ FAT_INTERFACE_INHERIT(ITest2, ITest3,
                       (void, method3, (bool)x)
                       )
 
+struct Nested {
+    void method4() {
+
+    }
+};
+
 struct Victim {
+    int refs = 0;
+    Nested nested;
+
+
     FAT_IMPLEMENTS(ITest, ITest3);
 
-    int refs = 0;
 
     void AddRef() {
         ++refs;
@@ -50,9 +59,9 @@ struct Victim {
     }
 };
 
-static_assert(sizeof(Victim) == sizeof(int));
+static_assert(sizeof(Victim) == sizeof(int) * 2);
 
-using fatcom::IUnknownPtr;
+using namespace fatcom;
 
 int main(int argc, char *argv[])
 {
@@ -62,13 +71,13 @@ int main(int argc, char *argv[])
     ITest_VTable_Describe::for_each([&](auto info){
         i += info.name.size();
     });
-    IUnknownPtr unk1 = IUnknownPtr::FromImplementor(new Victim);
+    IUnknownPtr unk1 = IUnknownPtr::Create(new Victim, &VTableFor<Victim>);
     ITestPtr ptr = ITestPtr(unk1);
-    ptr.method1(1, 2);
+    ptr->method1(1, 2);
     ITest2Ptr ptr2(ptr);
-    ptr2.method2(3);
+    ptr2->method2(3);
     ITest3Ptr ptr3(ptr);
-    ptr3.method3(false);
+    ptr3->method3(false);
 
     IUnknownPtr unk(ptr);
     ITestPtr ptrBack(unk);

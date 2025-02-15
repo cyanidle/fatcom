@@ -72,25 +72,6 @@ constexpr UUID ParseIID(const char* iid) {
 using describe::TypeList;
 using describe::Tag;
 
-namespace detail {
-
-template<typename Iface, typename...Result>
-auto removeFromList(TypeList<>, TypeList<Result...>) -> TypeList<Result...>;
-
-template<typename Iface, typename Head, typename...Tail, typename...Result>
-auto removeFromList(TypeList<Head, Tail...>, TypeList<Result...>) {
-    if constexpr (std::is_same_v<Iface, Head>) {
-        return removeFromList<Iface>(TypeList<Tail...>{}, TypeList<Result...>{});
-    } else {
-        return removeFromList<Iface>(TypeList<Tail...>{}, TypeList<Result..., Head>{});
-    }
-}
-
-template<typename T, typename List>
-using list_without_t = decltype(removeFromList<T>(List{}, TypeList<>{}));
-
-}
-
 template<typename T>
 using IFaceOf = typename T::iface;
 
@@ -98,13 +79,13 @@ template<typename T>
 using VTableOf = typename T::vtable;
 
 template<typename T>
-using VTablePopulatorOf = typename T::vtable_populator;
+using ThunksOf = typename T::thunks;
 
 template<typename T>
 using ParentOf = typename T::parent;
 
 struct IUnknown_VTable {
-    const void* (*QueryInterface)(const void* old, UUID iid) noexcept;
+    const void* (*QueryInterface)(void* self, UUID iid) noexcept;
     void (*AddRef)(void* self) noexcept;
     void (*Release)(void* self) noexcept;
 };
@@ -112,8 +93,7 @@ struct IUnknown_VTable {
 struct _IFaceIUnknown {
     using _VTBL = IUnknown_VTable;
     const void* QueryInterface(UUID iid) const noexcept {
-        // iface query does not involve data! both vfields are 0
-        return _VFIELD(this, 0)->QueryInterface(_VFIELD(this, 0), iid);
+        return _VFIELD(this, 0)->QueryInterface(_VFIELD(this, 1), iid);
     }
     void AddRef() noexcept {
         _VFIELD(this, 0)->AddRef(_VFIELD(this, 1));
@@ -127,12 +107,9 @@ struct IUnknown {
     using parent = void;
     using vtable = IUnknown_VTable;
     using iface = _IFaceIUnknown;
-    using vtable_populator = void;
+    using thunks = void;
     static constexpr UUID IID = {0, 0xC000000000000046};
 };
-
-template<typename IFace, typename U, typename...Other>
-const void* QueryInterface(const void* old, UUID iid) noexcept;
 
 template<typename U>
 void AddRef(void* self) noexcept {
@@ -144,37 +121,17 @@ void Release(void* self) noexcept {
     static_cast<U*>(self)->Release();
 }
 
-template<typename U, typename IFace, typename...Other>
-constexpr void MakeQueryIface(IUnknown_VTable& out, TypeList<Other...>) {
-    out.QueryInterface = QueryInterface<U, IFace, Other...>;
-}
-
 template<typename IFace, typename User>
 constexpr void PopulateVTable(VTableOf<IFace>& result) {
     using Parent = ParentOf<IFace>;
     if constexpr (!std::is_void_v<Parent>) {
         PopulateVTable<Parent, User>(result);
     }
-    using Populator = VTablePopulatorOf<IFace>;
-    if constexpr (!std::is_void_v<Populator>) {
-        Populator::template PopulateFor<User>(result);
+    using Thunks = ThunksOf<IFace>;
+    if constexpr (!std::is_void_v<Thunks>) {
+        Thunks::template PopulateFor<User>(result);
     }
 }
-
-template<typename IFace, typename User>
-constexpr VTableOf<IFace> GetVTableFor() {
-    VTableOf<IFace> result{};
-    result.AddRef = AddRef<User>;
-    result.Release = Release<User>;
-    using AllIfaces = typename User::FatInterfaces;
-    using OtherIFaces = detail::list_without_t<IFace, AllIfaces>;
-    MakeQueryIface<User, IFace>(result, OtherIFaces{});
-    PopulateVTable<IFace, User>(result);
-    return result;
-}
-
-template<typename T, typename User>
-inline constexpr auto VTableFor = GetVTableFor<T, User>();
 
 template<typename IFace>
 const void* checkIID(const void* res, UUID iid) {
@@ -188,15 +145,46 @@ const void* checkIID(const void* res, UUID iid) {
     }
 }
 
-template<typename User, typename IFace, typename...Other>
-const void* QueryInterface(const void* old, UUID iid) noexcept {
-    const void* res = nullptr;
-    ((res = checkIID<Other>(&VTableFor<Other, User>, iid)) || ...);
-    return res ? res : checkIID<IFace>(old, iid);
+template<typename IFace, typename User, auto* query>
+constexpr VTableOf<IFace> _MakeSingle() {
+    VTableOf<IFace> result{};
+    result.AddRef = AddRef<User>;
+    result.Release = Release<User>;
+    result.QueryInterface = query;
+    PopulateVTable<IFace, User>(result);
+    return result;
 }
 
+template<typename IFace, typename User, auto* query>
+inline constexpr VTableOf<IFace> _SingleVTable = _MakeSingle<IFace, User, query>();
+
+template<typename User, typename...IFaces>
+const void* QueryInterface(void*, UUID iid) noexcept {
+    constexpr auto* CurrentQuery = QueryInterface<User, IFaces...>;
+    const void* res = nullptr;
+    ((res = checkIID<IFaces>(&_SingleVTable<IFaces, User, CurrentQuery>, iid)) || ...);
+    return res;
+}
+
+template<typename U, typename...IFaces>
+constexpr auto* MakeQueryIface(IUnknown_VTable& out, TypeList<IFaces...>) {
+    return QueryInterface<U, IFaces...>;
+}
+
+template<typename User>
+constexpr IUnknown_VTable GetVTableFor() {
+    IUnknown_VTable result{};
+    result.AddRef = AddRef<User>;
+    result.Release = Release<User>;
+    result.QueryInterface = MakeQueryIface<User>(result, typename User::FatInterfaces{});
+    return result;
+}
+
+template<typename User>
+inline constexpr IUnknown_VTable VTableFor = GetVTableFor<User>();
+
 template<typename T>
-class InterfacePtr final: public IFaceOf<T>
+class InterfacePtr final: protected IFaceOf<T>
 {
     template<typename> friend class InterfacePtr;
 
@@ -220,10 +208,9 @@ public:
 
     InterfacePtr() noexcept : vtbl(nullptr), data(nullptr) {}
 
-    template<typename U>
-    static InterfacePtr FromImplementor(U* object) {
+    static InterfacePtr Create(void* object, const VTableOf<T>* vtbl) {
         InterfacePtr res;
-        res.vtbl = &VTableFor<T, U>;
+        res.vtbl = vtbl;
         res.data = object;
         res.AddRef();
         return res;
@@ -236,6 +223,13 @@ public:
         if (vtbl) this->AddRef();
     }
 
+    IFaceOf<T>* operator->() const noexcept {
+        return (IFaceOf<T>*)this;
+    }
+
+    IFaceOf<T>& operator*() const noexcept {
+        return (IFaceOf<T>&)*this;
+    }
 
     void* get() const {
         return data;
@@ -281,6 +275,12 @@ public:
 
 using IUnknownPtr = InterfacePtr<IUnknown>;
 
+template<typename I, auto memb>
+struct Aggregate {
+    using iface = I;
+    static constexpr auto member = memb;
+};
+
 }
 
 #define FAT_UUID(T, uuid) \
@@ -289,35 +289,39 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
 
 #define FAT_INTERFACE(T, ...) \
     struct T; \
-    struct T##_VTable; struct _IFace##T; struct _VTablePopulator##T; \
-    REGISTER_INFO(T, void, T##_VTable, _IFace##T, _VTablePopulator##T); \
+    struct T##_VTable; struct _IFace##T; struct _Thunk_##T; \
+    REGISTER_INFO(T, void, T##_VTable, _IFace##T, _Thunk_##T); \
     struct T##_VTable : fatcom::IUnknown_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { MAKE_DESCRIBE(__VA_ARGS__)  } \
     struct _IFace##T : fatcom::_IFaceIUnknown { using _VTBL = T##_VTable; MAKE_IFACE(__VA_ARGS__) }; \
-    struct _VTablePopulator##T { \
+    struct _Thunk_##T { \
+    using _IFACE = _IFace##T; \
+    MAKE_CONCRETES(__VA_ARGS__) \
     template<typename _User> \
     static constexpr void PopulateFor(T##_VTable& _res) { \
-        MAKE_CONCRETES(__VA_ARGS__) } \
+        USE_CONCRETES(__VA_ARGS__) } \
     }; \
     using T##Ptr = fatcom::InterfacePtr<T>;
 
 
 #define FAT_INTERFACE_INHERIT(Parent, T, ...) \
     struct T; struct Parent; \
-    struct T##_VTable; struct _IFace##T; struct _VTablePopulator##T; \
-    REGISTER_INFO(T, Parent, T##_VTable, _IFace##T, _VTablePopulator##T); \
+    struct T##_VTable; struct _IFace##T; struct _Thunk_##T; \
+    REGISTER_INFO(T, Parent, T##_VTable, _IFace##T, _Thunk_##T); \
     struct T##_VTable : Parent##_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { PARENT(Parent##_VTable); MAKE_DESCRIBE(__VA_ARGS__)  } \
     struct _IFace##T : _IFace##Parent { using _VTBL = T##_VTable; MAKE_IFACE(__VA_ARGS__) }; \
-    struct _VTablePopulator##T { \
+    struct _Thunk_##T { \
+    using _IFACE = _IFace##T; \
+    MAKE_CONCRETES(__VA_ARGS__) \
     template<typename _User> \
     static constexpr void PopulateFor(T##_VTable& _res) { \
-        _VTablePopulator##Parent::PopulateFor<_User>(_res); MAKE_CONCRETES(__VA_ARGS__) } \
+        _Thunk_##Parent::PopulateFor<_User>(_res); USE_CONCRETES(__VA_ARGS__) } \
     }; \
     using T##Ptr = fatcom::InterfacePtr<T>;
 
 #define FAT_IMPLEMENTS(...) \
-    using FatInterfaces = fatcom::TypeList<__VA_ARGS__>
+    using FatInterfaces = fatcom::TypeList<__VA_ARGS__>;
 
 
 
@@ -344,7 +348,7 @@ struct T { \
     using vtable = v; \
     using parent = p; \
     using iface = i; \
-    using vtable_populator = vp; \
+    using thunks = vp; \
     static constexpr fatcom::UUID IID = T##_UUID;\
 };
 
@@ -400,30 +404,28 @@ ret name(METHOD_SIG(__VA_ARGS__)) { \
 #define MAKE_DESCRIBE(...) \
     BOOST_PP_SEQ_FOR_EACH(ADD_METHOD_DESC, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
 
-namespace fatcom::detail {
 
-template<auto method, typename R, typename C, typename...Args>
-R Impl(void* self, Args...args) {
-    return (static_cast<C*>(self)->*method)(std::forward<Args>(args)...);
-}
-
-template<auto method, typename R, typename C, typename...Args>
-constexpr auto* MakeImpl(R(C::*)(Args...)) {
-    return Impl<method, R, C, Args...>;
-}
-
-}
-
-#define ADD_CONCRETE_PTR_DO_1(ret, name) \
-    (void)[](){ (void)((_User*)42)->name(); }; \
-    _res.name = fatcom::detail::MakeImpl<&_User::name>(&_User::name);
-// check method exists and correct signature
-#define ADD_CONCRETE_PTR_DO_MORE(ret, name, ...) \
-    (void)[](METHOD_SIG(__VA_ARGS__)){ (void)((_User*)42)->name(METHOD_CALL(__VA_ARGS__)); }; \
-    _res.name = fatcom::detail::MakeImpl<&_User::name>(&_User::name);
-#define ADD_CONCRETE_PTR_DO(ret, name, ...) _CHOOSE_1_OR_MORE(ADD_CONCRETE_PTR_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
-#define ADD_CONCRETE_PTR(_, __, method) ADD_CONCRETE_PTR_DO method
+#define MAKE_CONCRETE_PTR_DO_1(ret, name) \
+    template<typename _User> static ret name(void* _self){ return ((_User*)_self)->name(); }
+#define MAKE_CONCRETE_PTR_DO_MORE(ret, name, ...) \
+    template<typename _User> static ret name(void* _self, METHOD_SIG(__VA_ARGS__)){ return ((_User*)_self)->name(METHOD_CALL(__VA_ARGS__)); }
+#define MAKE_CONCRETE_PTR_DO(ret, name, ...) _CHOOSE_1_OR_MORE(MAKE_CONCRETE_PTR_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
+#define MAKE_CONCRETE_PTR(_, __, method) MAKE_CONCRETE_PTR_DO method
 #define MAKE_CONCRETES(...) \
-    BOOST_PP_SEQ_FOR_EACH(ADD_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
+BOOST_PP_SEQ_FOR_EACH(MAKE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
+
+namespace fatcom::detail {
+template<typename T, typename U> struct compat : std::false_type {};
+template<typename R, typename C, typename I, typename...Args>
+struct compat<R(C::*)(Args...), R(I::*)(Args...)> : std::true_type {};
+}
+
+#define USE_CONCRETE_PTR_DO(ret, name, ...) \
+    static_assert(fatcom::detail::compat<decltype(&_User::name), decltype(&_IFACE::name)>::value \
+    , #name "(): is not compatible with interface"); \
+    _res.name = name<_User>;
+#define USE_CONCRETE_PTR(_, __, method) USE_CONCRETE_PTR_DO method
+#define USE_CONCRETES(...) \
+    BOOST_PP_SEQ_FOR_EACH(USE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
 
 /////////////
