@@ -166,22 +166,17 @@ const void* QueryInterface(void*, UUID iid) noexcept {
     return res;
 }
 
-template<typename U, typename...IFaces>
-constexpr auto* MakeQueryIface(IUnknown_VTable& out, TypeList<IFaces...>) {
-    return QueryInterface<U, IFaces...>;
-}
-
-template<typename User>
-constexpr IUnknown_VTable GetVTableFor() {
+template<typename User, typename...IFaces>
+constexpr IUnknown_VTable _GetVTableFor(TypeList<IFaces...>) {
     IUnknown_VTable result{};
     result.AddRef = AddRef<User>;
     result.Release = Release<User>;
-    result.QueryInterface = MakeQueryIface<User>(result, typename User::FatInterfaces{});
+    result.QueryInterface = QueryInterface<User, IFaces...>;
     return result;
 }
 
 template<typename User>
-inline constexpr IUnknown_VTable VTableFor = GetVTableFor<User>();
+inline constexpr IUnknown_VTable VTableFor = _GetVTableFor<User>(typename User::FatInterfaces{});
 
 template<typename T>
 class InterfacePtr final: protected IFaceOf<T>
@@ -275,9 +270,13 @@ public:
 
 using IUnknownPtr = InterfacePtr<IUnknown>;
 
-template<typename I, auto memb>
+template<typename IFace, auto memb>
 struct Aggregate {
-    using iface = I;
+    using parent = ParentOf<IFace>;
+    using vtable = VTableOf<IFace>;
+    using iface = IFaceOf<IFace>;
+    using thunks = ThunksOf<IFace>;
+    static constexpr UUID IID = IFace::IID;
     static constexpr auto member = memb;
 };
 
