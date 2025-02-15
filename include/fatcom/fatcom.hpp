@@ -91,31 +91,18 @@ using list_without_t = decltype(removeFromList<T>(List{}, TypeList<>{}));
 
 }
 
-template<typename V, typename P, typename I, typename Populator>
-struct FatInfo {
-    using parent = P;
-    using vtable = V;
-    using iface = I;
-    using vtable_populator = Populator;
-    UUID iid;
-};
+template<typename T>
+using IFaceOf = typename T::iface;
 
 template<typename T>
-inline constexpr int InfoOf = 0;
+using VTableOf = typename T::vtable;
 
 template<typename T>
-using IFaceOf = typename decltype(InfoOf<T>)::iface;
+using VTablePopulatorOf = typename T::vtable_populator;
 
 template<typename T>
-using VTableOf = typename decltype(InfoOf<T>)::vtable;
+using ParentOf = typename T::parent;
 
-template<typename T>
-using VTablePopulatorOf = typename decltype(InfoOf<T>)::vtable_populator;
-
-template<typename T>
-using ParentOf = typename decltype(InfoOf<T>)::parent;
-
-struct IUnknown;
 struct IUnknown_VTable {
     const void* (*QueryInterface)(const void* old, UUID iid) noexcept;
     void (*AddRef)(void* self) noexcept;
@@ -136,9 +123,13 @@ struct _IFaceIUnknown {
     }
 };
 
-template<>
-inline constexpr FatInfo<IUnknown_VTable, void, _IFaceIUnknown, void>
-InfoOf<IUnknown>{UUID{0, 0xC000000000000046}};
+struct IUnknown {
+    using parent = void;
+    using vtable = IUnknown_VTable;
+    using iface = _IFaceIUnknown;
+    using vtable_populator = void;
+    static constexpr UUID IID = {0, 0xC000000000000046};
+};
 
 template<typename IFace, typename U, typename...Other>
 const void* QueryInterface(const void* old, UUID iid) noexcept;
@@ -187,7 +178,7 @@ inline constexpr auto VTableFor = GetVTableFor<T, User>();
 
 template<typename IFace>
 const void* checkIID(const void* res, UUID iid) {
-    if (InfoOf<IFace>.iid == iid)
+    if (IFace::IID == iid)
         return res;
     using Parent = ParentOf<IFace>;
     if constexpr (!std::is_void_v<Parent>) {
@@ -227,17 +218,21 @@ public:
     template<typename X, bool is = true>
     using if_compatible = std::enable_if_t<std::is_convertible_v<IFaceOf<X>*, IFaceOf<T>*> == is, int>;
 
+    InterfacePtr() noexcept : vtbl(nullptr), data(nullptr) {}
+
     template<typename U>
-    InterfacePtr(U* object) {
-        vtbl = &VTableFor<T, U>;
-        data = object;
-        if (vtbl) this->AddRef();
+    static InterfacePtr FromImplementor(U* object) {
+        InterfacePtr res;
+        res.vtbl = &VTableFor<T, U>;
+        res.data = object;
+        res.AddRef();
+        return res;
     }
 
     template<typename Other, if_compatible<Other, false> = 1>
     InterfacePtr(InterfacePtr<Other> const& other) {
-        vtbl = (const VTableOf<T>*)other.QueryInterface(InfoOf<T>.iid);
-        data = other.get();
+        vtbl = (const VTableOf<T>*)other.QueryInterface(T::IID);
+        data = vtbl ? other.get() : nullptr;
         if (vtbl) this->AddRef();
     }
 
@@ -268,6 +263,11 @@ public:
             moveFrom(other);
         }
         return *this;
+    }
+
+    template<typename U, if_compatible<U> = 1>
+    bool operator==(InterfacePtr<U> const& other) const noexcept {
+        return data == other.data;
     }
 
     explicit operator bool() const noexcept {
@@ -339,11 +339,14 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
 
 /////////
 
-#define REGISTER_INFO(T, Parent, v, iface, vc) \
-template<> \
-inline constexpr fatcom::FatInfo<v, Parent, iface, vc> \
-fatcom::InfoOf<T>{T##_UUID}
-
+#define REGISTER_INFO(T, p, v, i, vp) \
+struct T { \
+    using vtable = v; \
+    using parent = p; \
+    using iface = i; \
+    using vtable_populator = vp; \
+    static constexpr fatcom::UUID IID = T##_UUID;\
+};
 
 #define _DOCHOOSE_1_OR_1(prefix) BOOST_PP_CAT(prefix, 1)
 #define _DOCHOOSE_1_OR_MORE(prefix) BOOST_PP_CAT(prefix, MORE)
@@ -365,7 +368,7 @@ fatcom::InfoOf<T>{T##_UUID}
 #define _CHOOSE_1_OR_MORE(prefix, ...) BOOST_PP_OVERLOAD(_DOCHOOSE_1_OR_, 1,##__VA_ARGS__)(prefix)
 
 #define _OPEN_TYPE(t) t
-#define _CHOP_TYPE(t) std::move(
+#define _CHOP_TYPE(t) std::forward<t>(
 #define _METHOD_SIG_ARGS(_, __, n, arg) BOOST_PP_COMMA_IF(n) _OPEN_TYPE arg
 #define METHOD_SIG(...) BOOST_PP_SEQ_FOR_EACH_I(_METHOD_SIG_ARGS, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
 
