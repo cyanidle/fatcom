@@ -14,7 +14,7 @@ FAT_INTERFACE(ITest2,
 
 FAT_UUID(ITest4, "01212233-4455-6677-8899-aabbccddeeff")
 FAT_INTERFACE(ITest4,
-              (void, method4)
+              (int, method4)
               )
 
 FAT_UUID(ITest3, "00312233-4455-6677-8899-aabbccddeeff")
@@ -24,9 +24,9 @@ FAT_INTERFACE_INHERIT(ITest2,
                       )
 
 struct Nested {
-    void method4() {
-        int a = 1;
-        a = a;
+    int data = 1;
+    int method4() {
+        return data;
     }
 };
 
