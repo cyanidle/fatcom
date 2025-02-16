@@ -204,12 +204,10 @@ public:
 
     InterfacePtr() noexcept : vtbl(nullptr), data(nullptr) {}
 
-    static InterfacePtr Create(void* object, const VTableOf<T>* vtbl, bool ref = true) {
-        InterfacePtr res;
-        res.vtbl = vtbl;
-        res.data = object;
-        if (ref) res.AddRef();
-        return res;
+    InterfacePtr(void* object, const VTableOf<T>* vtbl, bool ref = true) noexcept {
+        vtbl = vtbl;
+        data = object;
+        if (ref) this->AddRef();
     }
 
     void* release() {
@@ -298,7 +296,7 @@ class ThinPtr {
     void* data;
 
     IUnknownPtr unk(bool ref = false) const noexcept {
-        return data ? IUnknownPtr::Create(data, *(IUnknown_VTable**)data, ref) : IUnknownPtr{};
+        return data ? IUnknownPtr(data, *(IUnknown_VTable**)data, ref) : IUnknownPtr{};
     }
     void unref() {
         unk(false); //Release at end of line

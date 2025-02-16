@@ -93,7 +93,7 @@ void basic() {
     ITest_VTable_Describe::for_each([&](auto info){
         i += info.name.size();
     });
-    IUnknownPtr unk1 = IUnknownPtr::Create(new Victim, &VTableFor<Victim>);
+    IUnknownPtr unk1 = IUnknownPtr(new Victim, &VTableFor<Victim>);
     ITestPtr ptr = ITestPtr(unk1);
     ptr->method1(1, 2);
     ITest2Ptr ptr2(ptr);
