@@ -109,6 +109,7 @@ struct IUnknown {
     using iface = _IFaceIUnknown;
     using thunks = void;
     static constexpr UUID IID = {0, 0xC000000000000046};
+    static constexpr int offset = 0;
 };
 
 template<typename U>
@@ -129,7 +130,7 @@ constexpr void PopulateVTable(VTableOf<IFace>& result) {
     }
     using Thunks = ThunksOf<IFace>;
     if constexpr (!std::is_void_v<Thunks>) {
-        Thunks::template PopulateFor<User>(result);
+        Thunks::template PopulateFor<User, IFace::offset>(result);
     }
 }
 
@@ -254,8 +255,8 @@ public:
         return *this;
     }
 
-    template<typename U, if_compatible<U> = 1>
-    bool operator==(InterfacePtr<U> const& other) const noexcept {
+    template<typename Any>
+    bool operator==(InterfacePtr<Any> const& other) const noexcept {
         return data == other.data;
     }
 
@@ -270,14 +271,14 @@ public:
 
 using IUnknownPtr = InterfacePtr<IUnknown>;
 
-template<typename IFace, auto memb>
+template<typename IFace, auto member>
 struct Aggregate {
     using parent = ParentOf<IFace>;
     using vtable = VTableOf<IFace>;
     using iface = IFaceOf<IFace>;
     using thunks = ThunksOf<IFace>;
     static constexpr UUID IID = IFace::IID;
-    static constexpr auto member = memb;
+    static constexpr auto offset = member;
 };
 
 }
@@ -296,7 +297,7 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
     struct _Thunk_##T { \
     using _IFACE = _IFace##T; \
     MAKE_CONCRETES(__VA_ARGS__) \
-    template<typename _User> \
+    template<typename _User, auto _offset> \
     static constexpr void PopulateFor(T##_VTable& _res) { \
         USE_CONCRETES(__VA_ARGS__) } \
     }; \
@@ -313,9 +314,9 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
     struct _Thunk_##T { \
     using _IFACE = _IFace##T; \
     MAKE_CONCRETES(__VA_ARGS__) \
-    template<typename _User> \
+    template<typename _User, auto _offset> \
     static constexpr void PopulateFor(T##_VTable& _res) { \
-        _Thunk_##Parent::PopulateFor<_User>(_res); USE_CONCRETES(__VA_ARGS__) } \
+        _Thunk_##Parent::PopulateFor<_User, _offset>(_res); USE_CONCRETES(__VA_ARGS__) } \
     }; \
     using T##Ptr = fatcom::InterfacePtr<T>;
 
@@ -349,6 +350,7 @@ struct T { \
     using iface = i; \
     using thunks = vp; \
     static constexpr fatcom::UUID IID = T##_UUID;\
+    static constexpr int offset = 0; \
 };
 
 #define _DOCHOOSE_1_OR_1(prefix) BOOST_PP_CAT(prefix, 1)
@@ -403,26 +405,45 @@ ret name(METHOD_SIG(__VA_ARGS__)) { \
 #define MAKE_DESCRIBE(...) \
     BOOST_PP_SEQ_FOR_EACH(ADD_METHOD_DESC, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
 
+namespace fatcom::detail {
+
+template<typename T, typename U> struct compat : std::false_type {};
+template<typename R, typename C, typename I, typename...Args>
+struct compat<R(C::*)(Args...), R(I::*)(Args...)> : std::true_type {};
+
+template<typename _User>
+_User* cast(void* self, int) {return (_User*)self;}
+template<typename _User, typename T>
+T* cast(void* self, T _User::*member) {return &(((_User*)self)->*member);}
+template<typename _User, typename T>
+T* cast(void* self, T* _User::*member) {return ((_User*)self)->*member;}
+template<typename _User, typename T>
+IFaceOf<T>* cast(void* self, InterfacePtr<T> _User::*member) {return (((_User*)self)->*member).operator->();}
+
+}
+
+#define _FAT_CAST() fatcom::detail::cast<_User>(_self, _offset)
+#define _FAT_CAST_T() std::remove_pointer_t<decltype(_FAT_CAST())>
+#define _FAT_CHECK_COMPAT(name) \
+static_assert(\
+fatcom::detail::compat<decltype(&_FAT_CAST_T()::name), decltype(&_IFACE::name)>::value, \
+"Method incompatible with interface: " #name \
+);
 
 #define MAKE_CONCRETE_PTR_DO_1(ret, name) \
-    template<typename _User> static ret name(void* _self){ return ((_User*)_self)->name(); }
+template<typename _User, auto _offset> \
+static ret name(void* _self){ _FAT_CHECK_COMPAT(name) \
+    return _FAT_CAST()->name(); }
 #define MAKE_CONCRETE_PTR_DO_MORE(ret, name, ...) \
-    template<typename _User> static ret name(void* _self, METHOD_SIG(__VA_ARGS__)){ return ((_User*)_self)->name(METHOD_CALL(__VA_ARGS__)); }
+template<typename _User, auto _offset> \
+static ret name(void* _self, METHOD_SIG(__VA_ARGS__)){ _FAT_CHECK_COMPAT(name) \
+    return _FAT_CAST()->name(METHOD_CALL(__VA_ARGS__)); }
 #define MAKE_CONCRETE_PTR_DO(ret, name, ...) _CHOOSE_1_OR_MORE(MAKE_CONCRETE_PTR_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
 #define MAKE_CONCRETE_PTR(_, __, method) MAKE_CONCRETE_PTR_DO method
 #define MAKE_CONCRETES(...) \
 BOOST_PP_SEQ_FOR_EACH(MAKE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
 
-namespace fatcom::detail {
-template<typename T, typename U> struct compat : std::false_type {};
-template<typename R, typename C, typename I, typename...Args>
-struct compat<R(C::*)(Args...), R(I::*)(Args...)> : std::true_type {};
-}
-
-#define USE_CONCRETE_PTR_DO(ret, name, ...) \
-    static_assert(fatcom::detail::compat<decltype(&_User::name), decltype(&_IFACE::name)>::value \
-    , #name "(): is not compatible with interface"); \
-    _res.name = name<_User>;
+#define USE_CONCRETE_PTR_DO(ret, name, ...) _res.name = name<_User, _offset>;
 #define USE_CONCRETE_PTR(_, __, method) USE_CONCRETE_PTR_DO method
 #define USE_CONCRETES(...) \
     BOOST_PP_SEQ_FOR_EACH(USE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))

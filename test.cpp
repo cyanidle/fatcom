@@ -18,13 +18,15 @@ FAT_INTERFACE(ITest4,
               )
 
 FAT_UUID(ITest3, "00312233-4455-6677-8899-aabbccddeeff")
-FAT_INTERFACE_INHERIT(ITest2, ITest3,
+FAT_INTERFACE_INHERIT(ITest2,
+                      ITest3,
                       (void, method3, (bool)x)
                       )
 
 struct Nested {
     void method4() {
-
+        int a = 1;
+        a = a;
     }
 };
 
@@ -33,7 +35,7 @@ struct Victim {
     Nested nested;
 
 
-    FAT_IMPLEMENTS(ITest, ITest3);
+    FAT_IMPLEMENTS(ITest, ITest3, fatcom::Aggregate<ITest4, &Victim::nested>);
 
 
     void AddRef() {
@@ -82,6 +84,7 @@ int main(int argc, char *argv[])
     IUnknownPtr unk(ptr);
     ITestPtr ptrBack(unk);
     ITest4Ptr ptr4(ptr);
-    assert(!ptr4);
+    assert(ptr4 == unk1);
+    ptr4->method4();
     return 0;
 }
