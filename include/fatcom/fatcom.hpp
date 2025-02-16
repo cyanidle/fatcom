@@ -163,7 +163,7 @@ template<typename User, typename...IFaces>
 const void* QueryInterface(void*, UUID iid) noexcept {
     constexpr auto* CurrentQuery = QueryInterface<User, IFaces...>;
     const void* res = nullptr;
-    ((res = checkIID<IFaces>(&_SingleVTable<IFaces, User, CurrentQuery>, iid)) || ...);
+    (void)((res = checkIID<IFaces>(&_SingleVTable<IFaces, User, CurrentQuery>, iid)) || ...);
     return res;
 }
 
@@ -204,11 +204,18 @@ public:
 
     InterfacePtr() noexcept : vtbl(nullptr), data(nullptr) {}
 
-    static InterfacePtr Create(void* object, const VTableOf<T>* vtbl) {
+    static InterfacePtr Create(void* object, const VTableOf<T>* vtbl, bool ref = true) {
         InterfacePtr res;
         res.vtbl = vtbl;
         res.data = object;
-        res.AddRef();
+        if (ref) res.AddRef();
+        return res;
+    }
+
+    void* release() {
+        auto res = data;
+        vtbl = nullptr;
+        data = nullptr;
         return res;
     }
 
@@ -279,6 +286,69 @@ struct Aggregate {
     using thunks = ThunksOf<IFace>;
     static constexpr UUID IID = IFace::IID;
     static constexpr auto offset = member;
+};
+
+#define ALLOW_THIN_PTR(T) \
+using fatcom_thinnable = int; \
+const void* _VIunk = &fatcom::VTableFor<T>; \
+friend void __check_thinv(T*) {static_assert(offsetof(T, _VIunk) == 0, "ALLOW_THIN_PTR() must be first member"); }
+
+// First member of referenced class must be a pointer to any VTable
+class ThinPtr {
+    void* data;
+
+    IUnknownPtr unk(bool ref = false) const noexcept {
+        return data ? IUnknownPtr::Create(data, *(IUnknown_VTable**)data, ref) : IUnknownPtr{};
+    }
+    void unref() {
+        unk(false); //Release at end of line
+    }
+    void ref() {
+        unk(true).release(); // AddRef but no Release
+    }
+public:
+    IUnknownPtr GetUnknown() const noexcept {
+        return unk(true);
+    }
+    ThinPtr() noexcept : data(nullptr) {}
+    static ThinPtr CreateUnsafe(void* data) noexcept {
+        ThinPtr res;
+        res.data = data;
+        res.ref();
+        return res;
+    }
+    void* get() const noexcept {
+        return data;
+    }
+    template<typename T, typename T::fatcom_thinnable = 1>
+    ThinPtr(T* data) noexcept : data(data) {
+        ref();
+    }
+    ThinPtr(ThinPtr const& other) noexcept : data(other.data) {
+        ref();
+    }
+    ThinPtr& operator=(ThinPtr const& other) noexcept {
+        if (this != &other) {
+            unref(); //Release
+            data = other.data;
+            ref();
+        }
+        return *this;
+    }
+    ThinPtr(ThinPtr&& other) noexcept : data(std::exchange(other.data, nullptr)) {}
+    ThinPtr& operator=(ThinPtr&& other) noexcept {
+        std::swap(*this, other);
+        return *this;
+    }
+    explicit operator bool() const noexcept {
+        return data;
+    }
+    bool operator==(const ThinPtr& other) const noexcept {
+        return data == other.data;
+    }
+    ~ThinPtr() {
+        unref();
+    }
 };
 
 }

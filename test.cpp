@@ -1,5 +1,6 @@
 #include "fatcom/fatcom.hpp"
 #include <cassert>
+#include <vector>
 
 FAT_UUID(ITest, "00112233-4455-6677-8899-aabbccddeeff")
 FAT_INTERFACE(ITest,
@@ -30,21 +31,24 @@ struct Nested {
     }
 };
 
-struct Victim {
-    int refs = 0;
-    Nested nested;
-
-
-    FAT_IMPLEMENTS(ITest, ITest3, fatcom::Aggregate<ITest4, &Victim::nested>);
-
-
+template<typename T>
+struct RefCounted {
     void AddRef() {
         ++refs;
     }
     void Release() {
         if (!--refs)
-            delete this;
+            delete static_cast<T*>(this);
     }
+    int refs = 0;
+};
+
+struct Victim : RefCounted<Victim> {
+    Nested nested;
+
+    FAT_IMPLEMENTS(ITest, ITest3, fatcom::Aggregate<ITest4, &Victim::nested>);
+
+
     bool method1(int a, int b) {
         return a > b;
     }
@@ -61,12 +65,28 @@ struct Victim {
     }
 };
 
-static_assert(sizeof(Victim) == sizeof(int) * 2);
 
 using namespace fatcom;
 
-int main(int argc, char *argv[])
-{
+struct RestoreExample {
+    ALLOW_THIN_PTR(RestoreExample);
+    FAT_IMPLEMENTS()
+    void AddRef() {++refs;}
+    void Release() {if (!--refs) delete this;}
+    int refs = 0;
+};
+
+struct RestoreExample2 {
+    ALLOW_THIN_PTR(RestoreExample2);
+    FAT_IMPLEMENTS()
+    void AddRef() {++refs;}
+    void Release() {if (!--refs) delete this;}
+    int refs = 0;
+};
+
+static_assert(sizeof(Victim) == sizeof(int) * 2);
+
+void basic() {
     int i = 0;
     constexpr auto ITestName = ITest_VTable_Describe::name;
     static_assert(ITestName == "ITest");
@@ -86,5 +106,18 @@ int main(int argc, char *argv[])
     ITest4Ptr ptr4(ptr);
     assert(ptr4 == unk1);
     ptr4->method4();
+}
+
+void restore() {
+    static_assert(sizeof(fatcom::ThinPtr) == sizeof(void*));
+    std::vector<fatcom::ThinPtr> thins;
+    thins.push_back(new RestoreExample);
+    thins.push_back(new RestoreExample2);
+}
+
+int main(int argc, char *argv[])
+{
+    basic();
+    restore();
     return 0;
 }
