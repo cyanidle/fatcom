@@ -85,6 +85,7 @@ template<typename T>
 using ParentOf = typename T::parent;
 
 struct IUnknown_VTable {
+    // MUST: increment refcount on self if cast is OK
     const void* (*QueryInterface)(void* self, UUID iid) noexcept;
     void (*AddRef)(void* self) noexcept;
     void (*Release)(void* self) noexcept;
@@ -160,10 +161,11 @@ template<typename IFace, typename User, auto* query>
 inline constexpr VTableOf<IFace> _SingleVTable = _MakeSingle<IFace, User, query>();
 
 template<typename User, typename...IFaces>
-const void* QueryInterface(void*, UUID iid) noexcept {
+const void* QueryInterface(void* self, UUID iid) noexcept {
     constexpr auto* CurrentQuery = QueryInterface<User, IFaces...>;
     const void* res = nullptr;
     (void)((res = checkIID<IFaces>(&_SingleVTable<IFaces, User, CurrentQuery>, iid)) || ...);
+    if (res) AddRef<User>(self);
     return res;
 }
 
@@ -204,9 +206,13 @@ public:
 
     InterfacePtr() noexcept : vtbl(nullptr), data(nullptr) {}
 
-    InterfacePtr(void* object, const VTableOf<T>* vtbl, bool ref = true) noexcept {
-        vtbl = vtbl;
-        data = object;
+    template<typename U, typename = typename U::FatInterfaces>
+    InterfacePtr(U* object) noexcept : InterfacePtr(object, &VTableFor<U>) {}
+
+    InterfacePtr(void* object, const VTableOf<T>* vtbl, bool ref = true) noexcept :
+        vtbl(vtbl),
+        data(object)
+    {
         if (ref) this->AddRef();
     }
 
@@ -221,7 +227,6 @@ public:
     InterfacePtr(InterfacePtr<Other> const& other) {
         vtbl = (const VTableOf<T>*)other.QueryInterface(T::IID);
         data = vtbl ? other.get() : nullptr;
-        if (vtbl) this->AddRef();
     }
 
     IFaceOf<T>* operator->() const noexcept {
