@@ -86,14 +86,14 @@ using ParentOf = typename T::parent;
 
 struct IUnknown_VTable {
     // MUST: increment refcount on self if cast is OK
-    const void* (*QueryInterface)(void* self, UUID iid) noexcept;
+    const IUnknown_VTable* (*QueryInterface)(void* self, UUID iid) noexcept;
     void (*AddRef)(void* self) noexcept;
     void (*Release)(void* self) noexcept;
 };
 
 struct _IFaceIUnknown {
     using _VTBL = IUnknown_VTable;
-    const void* QueryInterface(UUID iid) const noexcept {
+    const IUnknown_VTable* QueryInterface(UUID iid) const noexcept {
         return _VFIELD(this, 0)->QueryInterface(_VFIELD(this, 1), iid);
     }
     void AddRef() noexcept {
@@ -136,7 +136,7 @@ constexpr void PopulateVTable(VTableOf<IFace>& result) {
 }
 
 template<typename IFace>
-const void* checkIID(const void* res, UUID iid) {
+const IUnknown_VTable* checkIID(const IUnknown_VTable* res, UUID iid) {
     if (IFace::IID == iid)
         return res;
     using Parent = ParentOf<IFace>;
@@ -161,9 +161,9 @@ template<typename IFace, typename User, auto* query>
 inline constexpr VTableOf<IFace> _SingleVTable = _MakeSingle<IFace, User, query>();
 
 template<typename User, typename...IFaces>
-const void* QueryInterface(void* self, UUID iid) noexcept {
+const IUnknown_VTable* QueryInterface(void* self, UUID iid) noexcept {
     constexpr auto* CurrentQuery = QueryInterface<User, IFaces...>;
-    const void* res = nullptr;
+    const IUnknown_VTable* res = nullptr;
     (void)((res = checkIID<IFaces>(&_SingleVTable<IFaces, User, CurrentQuery>, iid)) || ...);
     if (res) AddRef<User>(self);
     return res;
