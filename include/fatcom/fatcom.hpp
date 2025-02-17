@@ -216,7 +216,7 @@ public:
         if (ref) this->AddRef();
     }
 
-    void* release() {
+    void* leak() {
         auto res = data;
         vtbl = nullptr;
         data = nullptr;
@@ -307,7 +307,7 @@ class ThinPtr {
         unk(false); //Release at end of line
     }
     void ref() {
-        unk(true).release(); // AddRef but no Release
+        unk(true).leak(); // AddRef but no Release
     }
 public:
     IUnknownPtr GetUnknown() const noexcept {
