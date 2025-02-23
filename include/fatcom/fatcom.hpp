@@ -84,6 +84,17 @@ using ThunksOf = typename T::thunks;
 template<typename T>
 using ParentOf = typename T::parent;
 
+#ifdef _MSC_VER
+#define _FAT_ALWAYS_INLINE __forceinline
+#else
+#define _FAT_ALWAYS_INLINE __attribute__((always_inline))
+#endif
+
+#define IMPLEMENT_VTABLE(V) \
+using _VTBL = V; \
+_FAT_ALWAYS_INLINE V* vtable() const noexcept {return _VFIELD(this, 0); } \
+_FAT_ALWAYS_INLINE void* vdata() const noexcept {return _VFIELD(this, 1); }
+
 struct IUnknown_VTable {
     // MUST: increment refcount on self if cast is OK
     const IUnknown_VTable* (*QueryInterface)(void* self, UUID iid) noexcept;
@@ -91,23 +102,23 @@ struct IUnknown_VTable {
     void (*Release)(void* self) noexcept;
 };
 
-struct _IFaceIUnknown {
-    using _VTBL = IUnknown_VTable;
+struct IUnknown_IFace {
+    IMPLEMENT_VTABLE(IUnknown_VTable)
     const IUnknown_VTable* QueryInterface(UUID iid) const noexcept {
-        return _VFIELD(this, 0)->QueryInterface(_VFIELD(this, 1), iid);
+        return vtable()->QueryInterface(vdata(), iid);
     }
     void AddRef() noexcept {
-        _VFIELD(this, 0)->AddRef(_VFIELD(this, 1));
+        vtable()->AddRef(vdata());
     }
     void Release() noexcept {
-        _VFIELD(this, 0)->Release(_VFIELD(this, 1));
+        vtable()->Release(vdata());
     }
 };
 
 struct IUnknown {
     using parent = void;
     using vtable = IUnknown_VTable;
-    using iface = _IFaceIUnknown;
+    using iface = IUnknown_IFace;
     using thunks = void;
     static constexpr UUID IID = {0, 0xC000000000000046};
     static constexpr int offset = 0;
@@ -282,12 +293,7 @@ public:
 using IUnknownPtr = InterfacePtr<IUnknown>;
 
 template<typename IFace, auto member>
-struct Aggregate {
-    using parent = ParentOf<IFace>;
-    using vtable = VTableOf<IFace>;
-    using iface = IFaceOf<IFace>;
-    using thunks = ThunksOf<IFace>;
-    static constexpr UUID IID = IFace::IID;
+struct Aggregate : IFace {
     static constexpr auto offset = member;
 };
 
@@ -362,13 +368,12 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
 
 #define FAT_INTERFACE(T, ...) \
     struct T; \
-    struct T##_VTable; struct _IFace##T; struct _Thunk_##T; \
-    REGISTER_INFO(T, void, T##_VTable, _IFace##T, _Thunk_##T); \
+    REGISTER_INFO(T, void); \
     struct T##_VTable : fatcom::IUnknown_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { MAKE_DESCRIBE(__VA_ARGS__)  } \
-    struct _IFace##T : fatcom::_IFaceIUnknown { using _VTBL = T##_VTable; MAKE_IFACE(__VA_ARGS__) }; \
-    struct _Thunk_##T { \
-    using _IFACE = _IFace##T; \
+    struct T##_IFace : fatcom::IUnknown_IFace { IMPLEMENT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
+    struct T##_Thunk { \
+    using _IFACE = T##_IFace; \
     MAKE_CONCRETES(__VA_ARGS__) \
     template<typename _User, auto _offset> \
     static constexpr void PopulateFor(T##_VTable& _res) { \
@@ -379,17 +384,16 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
 
 #define FAT_INTERFACE_INHERIT(Parent, T, ...) \
     struct T; struct Parent; \
-    struct T##_VTable; struct _IFace##T; struct _Thunk_##T; \
-    REGISTER_INFO(T, Parent, T##_VTable, _IFace##T, _Thunk_##T); \
+    REGISTER_INFO(T, Parent); \
     struct T##_VTable : Parent##_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { PARENT(Parent##_VTable); MAKE_DESCRIBE(__VA_ARGS__)  } \
-    struct _IFace##T : _IFace##Parent { using _VTBL = T##_VTable; MAKE_IFACE(__VA_ARGS__) }; \
-    struct _Thunk_##T { \
-    using _IFACE = _IFace##T; \
+    struct T##_IFace : Parent##_IFace { IMPLEMENT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
+    struct T##_Thunk { \
+    using _IFACE = T##_IFace; \
     MAKE_CONCRETES(__VA_ARGS__) \
     template<typename _User, auto _offset> \
     static constexpr void PopulateFor(T##_VTable& _res) { \
-        _Thunk_##Parent::PopulateFor<_User, _offset>(_res); USE_CONCRETES(__VA_ARGS__) } \
+        Parent##_Thunk::PopulateFor<_User, _offset>(_res); USE_CONCRETES(__VA_ARGS__) } \
     }; \
     using T##Ptr = fatcom::InterfacePtr<T>;
 
@@ -416,12 +420,13 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
 
 /////////
 
-#define REGISTER_INFO(T, p, v, i, vp) \
+#define REGISTER_INFO(T, par) \
+struct T##_VTable; struct T##_IFace; struct T##_Thunk; \
 struct T { \
-    using vtable = v; \
-    using parent = p; \
-    using iface = i; \
-    using thunks = vp; \
+    using vtable = T##_VTable; \
+    using parent = par; \
+    using iface = T##_IFace; \
+    using thunks = T##_Thunk; \
     static constexpr fatcom::UUID IID = T##_UUID;\
     static constexpr int offset = 0; \
 };
@@ -455,11 +460,11 @@ struct T { \
 
 #define IFACE_METHOD_DO_1(ret, name) \
 ret name() { \
-    return _VFIELD(this, 0)->name(_VFIELD(this, 1)); \
+    return vtable()->name(vdata()); \
 }
 #define IFACE_METHOD_DO_MORE(ret, name, ...) \
 ret name(METHOD_SIG(__VA_ARGS__)) { \
-    return _VFIELD(this, 0)->name(_VFIELD(this, 1), METHOD_CALL(__VA_ARGS__)); \
+    return vtable()->name(vdata(), METHOD_CALL(__VA_ARGS__)); \
 }
 #define IFACE_METHOD_DO(ret, name, ...) _CHOOSE_1_OR_MORE(IFACE_METHOD_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
 #define IFACE_METHOD(_, __, method) IFACE_METHOD_DO method
