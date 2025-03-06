@@ -115,9 +115,17 @@ void restore() {
     thins.push_back(new RestoreExample2);
 }
 
+void moves() {
+    auto* victim = new Victim;
+    IUnknownPtr unk1 = IUnknownPtr(victim, &VTableFor<Victim>);
+    ITestPtr test1(std::move(unk1));
+    auto test2 = test1;
+}
+
 int main(int argc, char *argv[])
 {
     basic();
     restore();
+    moves();
     return 0;
 }

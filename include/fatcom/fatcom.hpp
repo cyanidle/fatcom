@@ -8,66 +8,10 @@
 #include "boost/preprocessor/control/if.hpp"
 #include "boost/preprocessor/stringize.hpp"
 
-#define _VFIELD(this, idx) ((_VTBL**)this)[idx]
+#include "fatcom_uuid.hpp"
 
 namespace fatcom
 {
-
-struct UUID {
-    uint64_t lo;
-    uint64_t hi;
-};
-
-constexpr bool operator==(UUID l, UUID r) noexcept {
-    return l.hi == r.hi && l.lo == r.lo;
-}
-
-constexpr uint64_t hex(char a) {
-    uint64_t res =
-        a < '0' ? -1 :
-        a <= '9' ? a - '0' :
-        a < 'A' ? -1 :
-        a <= 'F' ? a - 'A' + 10 :
-        a < 'a' ? -1 :
-        a <= 'f' ? a - 'a' + 10 :
-        -1;
-    if (res == -1) throw "Cannot parse UUID: Invalid hex digit";
-    return res;
-}
-
-constexpr void dash(char ch) {
-    if (ch != '-') throw "Cannot parse UUID: missing '-'";
-}
-
-constexpr uint64_t hex_int(const char*& iid) {
-    uint64_t res = hex(*iid++);
-    return res | hex(*iid++) << 4;
-}
-
-constexpr UUID ParseIID(const char* iid) {
-    UUID res{};
-    res.lo |= hex_int(iid) << 56;
-    res.lo |= hex_int(iid) << 48;
-    res.lo |= hex_int(iid) << 40;
-    res.lo |= hex_int(iid) << 32;
-    dash(*iid++);
-    res.lo |= hex_int(iid) << 24;
-    res.lo |= hex_int(iid) << 16;
-    dash(*iid++);
-    res.lo |= hex_int(iid) << 8;
-    res.lo |= hex_int(iid);
-    dash(*iid++);
-    res.hi |= hex_int(iid);
-    res.hi |= hex_int(iid) << 8;
-    dash(*iid++);
-    res.hi |= hex_int(iid) << 16;
-    res.hi |= hex_int(iid) << 24;
-    res.hi |= hex_int(iid) << 32;
-    res.hi |= hex_int(iid) << 40;
-    res.hi |= hex_int(iid) << 48;
-    res.hi |= hex_int(iid) << 56;
-    return res;
-}
 
 using describe::TypeList;
 using describe::Tag;
@@ -90,22 +34,22 @@ using ParentOf = typename T::parent;
 #define _FAT_ALWAYS_INLINE __attribute__((always_inline))
 #endif
 
-#define IMPLEMENT_VTABLE(V) \
+#define IMPLEMENT_FAT_VTABLE(V) \
 using _VTBL = V; \
-_FAT_ALWAYS_INLINE V* vtable() const noexcept {return _VFIELD(this, 0); } \
-_FAT_ALWAYS_INLINE void* vdata() const noexcept {return _VFIELD(this, 1); }
+_FAT_ALWAYS_INLINE V* vtable() const noexcept {return ((_VTBL**)this)[0]; } \
+_FAT_ALWAYS_INLINE void* vdata() const noexcept {return ((_VTBL**)this)[1]; }
 
 struct IUnknown_VTable {
-    // MUST: increment refcount on self if cast is OK
-    const IUnknown_VTable* (*QueryInterface)(void* self, UUID iid) noexcept;
+    // MUST: increment refcount on self if cast is OK (and addRef == true)
+    const IUnknown_VTable* (*QueryInterface)(void* self, UUID iid, bool addRef) noexcept;
     void (*AddRef)(void* self) noexcept;
     void (*Release)(void* self) noexcept;
 };
 
 struct IUnknown_IFace {
-    IMPLEMENT_VTABLE(IUnknown_VTable)
-    const IUnknown_VTable* QueryInterface(UUID iid) const noexcept {
-        return vtable()->QueryInterface(vdata(), iid);
+    IMPLEMENT_FAT_VTABLE(IUnknown_VTable)
+    const IUnknown_VTable* QueryInterface(UUID iid, bool addRef) const noexcept {
+        return vtable()->QueryInterface(vdata(), iid, addRef);
     }
     void AddRef() noexcept {
         vtable()->AddRef(vdata());
@@ -115,13 +59,17 @@ struct IUnknown_IFace {
     }
 };
 
+struct _self {
+    static constexpr bool value = false;
+};
+
 struct IUnknown {
     using parent = void;
     using vtable = IUnknown_VTable;
     using iface = IUnknown_IFace;
     using thunks = void;
     static constexpr UUID IID = {0, 0xC000000000000046};
-    static constexpr int offset = 0;
+    using offset = _self;
 };
 
 template<typename U>
@@ -142,7 +90,7 @@ constexpr void PopulateVTable(VTableOf<IFace>& result) {
     }
     using Thunks = ThunksOf<IFace>;
     if constexpr (!std::is_void_v<Thunks>) {
-        Thunks::template PopulateFor<User, IFace::offset>(result);
+        Thunks::template PopulateFor<User, typename IFace::offset>(result);
     }
 }
 
@@ -172,11 +120,11 @@ template<typename IFace, typename User, auto* query>
 inline constexpr VTableOf<IFace> _SingleVTable = _MakeSingle<IFace, User, query>();
 
 template<typename User, typename...IFaces>
-const IUnknown_VTable* QueryInterface(void* self, UUID iid) noexcept {
+const IUnknown_VTable* QueryInterface(void* self, UUID iid, bool addRef) noexcept {
     constexpr auto* CurrentQuery = QueryInterface<User, IFaces...>;
     const IUnknown_VTable* res = nullptr;
     (void)((res = checkIID<IFaces>(&_SingleVTable<IFaces, User, CurrentQuery>, iid)) || ...);
-    if (res) AddRef<User>(self);
+    if (res && addRef) AddRef<User>(self);
     return res;
 }
 
@@ -227,7 +175,11 @@ public:
         if (ref) this->AddRef();
     }
 
-    void* leak() {
+    const VTableOf<T>* vtable() const noexcept {
+        return vtbl;
+    }
+
+    void* leak() noexcept {
         auto res = data;
         vtbl = nullptr;
         data = nullptr;
@@ -235,9 +187,20 @@ public:
     }
 
     template<typename Other, if_compatible<Other, false> = 1>
-    InterfacePtr(InterfacePtr<Other> const& other) {
-        vtbl = (const VTableOf<T>*)other.QueryInterface(T::IID);
-        data = vtbl ? other.get() : nullptr;
+    InterfacePtr(InterfacePtr<Other> const& other) noexcept {
+        if (other.data) {
+            vtbl = (const VTableOf<T>*)other.QueryInterface(T::IID, true);
+            data = vtbl ? other.get() : nullptr;
+        }
+    }
+    template<typename Other, if_compatible<Other, false> = 1>
+    InterfacePtr(InterfacePtr<Other>&& other) noexcept {
+        if (other.data) {
+            vtbl = (const VTableOf<T>*)other.QueryInterface(T::IID, false);
+            data = vtbl ? other.get() : nullptr;
+            other.vtbl = nullptr;
+            other.data = nullptr;
+        }
     }
 
     IFaceOf<T>* operator->() const noexcept {
@@ -294,7 +257,8 @@ using IUnknownPtr = InterfacePtr<IUnknown>;
 
 template<typename IFace, auto member>
 struct Aggregate : IFace {
-    static constexpr auto offset = member;
+    static constexpr auto value = member;
+    using offset = Aggregate;
 };
 
 #define ALLOW_THIN_PTR(T) \
@@ -362,6 +326,8 @@ public:
 
 }
 
+#ifndef FATCOM_NO_MACROS
+
 #define FAT_UUID(T, uuid) \
 struct T; \
 constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
@@ -371,11 +337,11 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
     REGISTER_INFO(T, void); \
     struct T##_VTable : fatcom::IUnknown_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { MAKE_DESCRIBE(__VA_ARGS__)  } \
-    struct T##_IFace : fatcom::IUnknown_IFace { IMPLEMENT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
+    struct T##_IFace : fatcom::IUnknown_IFace { IMPLEMENT_FAT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
     struct T##_Thunk { \
     using _IFACE = T##_IFace; \
     MAKE_CONCRETES(__VA_ARGS__) \
-    template<typename _User, auto _offset> \
+    template<typename _User, typename _offset> \
     static constexpr void PopulateFor(T##_VTable& _res) { \
         USE_CONCRETES(__VA_ARGS__) } \
     }; \
@@ -387,11 +353,11 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
     REGISTER_INFO(T, Parent); \
     struct T##_VTable : Parent##_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { PARENT(Parent##_VTable); MAKE_DESCRIBE(__VA_ARGS__)  } \
-    struct T##_IFace : Parent##_IFace { IMPLEMENT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
+    struct T##_IFace : Parent##_IFace { IMPLEMENT_FAT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
     struct T##_Thunk { \
     using _IFACE = T##_IFace; \
     MAKE_CONCRETES(__VA_ARGS__) \
-    template<typename _User, auto _offset> \
+    template<typename _User, typename _offset> \
     static constexpr void PopulateFor(T##_VTable& _res) { \
         Parent##_Thunk::PopulateFor<_User, _offset>(_res); USE_CONCRETES(__VA_ARGS__) } \
     }; \
@@ -428,7 +394,7 @@ struct T { \
     using iface = T##_IFace; \
     using thunks = T##_Thunk; \
     static constexpr fatcom::UUID IID = T##_UUID;\
-    static constexpr int offset = 0; \
+    using offset = fatcom::_self; \
 };
 
 #define _DOCHOOSE_1_OR_1(prefix) BOOST_PP_CAT(prefix, 1)
@@ -490,7 +456,7 @@ template<typename R, typename C, typename I, typename...Args>
 struct compat<R(C::*)(Args...), R(I::*)(Args...)> : std::true_type {};
 
 template<typename _User>
-_User* cast(void* self, int) {return (_User*)self;}
+_User* cast(void* self, bool) {return (_User*)self;}
 template<typename _User, typename T>
 T* cast(void* self, T _User::*member) {return &(((_User*)self)->*member);}
 template<typename _User, typename T>
@@ -500,7 +466,7 @@ IFaceOf<T>* cast(void* self, InterfacePtr<T> _User::*member) {return (((_User*)s
 
 }
 
-#define _FAT_CAST() fatcom::detail::cast<_User>(_self, _offset)
+#define _FAT_CAST() fatcom::detail::cast<_User>(_self, _offset::value)
 #define _FAT_CAST_T() std::remove_pointer_t<decltype(_FAT_CAST())>
 #define _FAT_CHECK_COMPAT(name) \
 static_assert(\
@@ -509,11 +475,11 @@ fatcom::detail::compat<decltype(&_FAT_CAST_T()::name), decltype(&_IFACE::name)>:
 );
 
 #define MAKE_CONCRETE_PTR_DO_1(ret, name) \
-template<typename _User, auto _offset> \
+template<typename _User, typename _offset> \
 static ret name(void* _self){ _FAT_CHECK_COMPAT(name) \
     return _FAT_CAST()->name(); }
 #define MAKE_CONCRETE_PTR_DO_MORE(ret, name, ...) \
-template<typename _User, auto _offset> \
+template<typename _User, typename _offset> \
 static ret name(void* _self, METHOD_SIG(__VA_ARGS__)){ _FAT_CHECK_COMPAT(name) \
     return _FAT_CAST()->name(METHOD_CALL(__VA_ARGS__)); }
 #define MAKE_CONCRETE_PTR_DO(ret, name, ...) _CHOOSE_1_OR_MORE(MAKE_CONCRETE_PTR_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
@@ -527,3 +493,5 @@ BOOST_PP_SEQ_FOR_EACH(MAKE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__
     BOOST_PP_SEQ_FOR_EACH(USE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
 
 /////////////
+
+#endif
