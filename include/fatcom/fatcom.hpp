@@ -95,7 +95,7 @@ constexpr void PopulateVTable(VTableOf<IFace>& result) {
 }
 
 template<typename IFace>
-const IUnknown_VTable* checkIID(const IUnknown_VTable* res, UUID iid) {
+_FAT_ALWAYS_INLINE const IUnknown_VTable* checkIID(const IUnknown_VTable* res, UUID iid) {
     if (IFace::IID == iid)
         return res;
     using Parent = ParentOf<IFace>;
