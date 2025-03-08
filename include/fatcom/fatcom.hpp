@@ -1,13 +1,8 @@
 #pragma once
+#ifndef _FATCOM_HPP
+#define _FATCOM_HPP
 
 #include "describe/describe.hpp"
-#include "boost/preprocessor/seq/for_each.hpp"
-#include "boost/preprocessor/seq/for_each_i.hpp"
-#include "boost/preprocessor/variadic/to_seq.hpp"
-#include "boost/preprocessor/comma_if.hpp"
-#include "boost/preprocessor/control/if.hpp"
-#include "boost/preprocessor/stringize.hpp"
-
 #include "fatcom_uuid.hpp"
 
 namespace fatcom
@@ -16,17 +11,25 @@ namespace fatcom
 using describe::TypeList;
 using describe::Tag;
 
+//can be overriden to define info
+//for iface non-intrusively
 template<typename T>
-using IFaceOf = typename T::iface;
+struct InfoOf : T {};
 
 template<typename T>
-using VTableOf = typename T::vtable;
+using IFaceOf = typename InfoOf<T>::iface;
 
 template<typename T>
-using ThunksOf = typename T::thunks;
+using VTableOf = typename InfoOf<T>::vtable;
 
 template<typename T>
-using ParentOf = typename T::parent;
+using ThunksOf = typename InfoOf<T>::thunks;
+
+template<typename T>
+using ParentOf = typename InfoOf<T>::parent;
+
+template<typename T>
+using OffsetOf = typename InfoOf<T>::offset;
 
 #ifdef _MSC_VER
 #define _FAT_ALWAYS_INLINE __forceinline
@@ -38,6 +41,29 @@ using ParentOf = typename T::parent;
 using _VTBL = V; \
 _FAT_ALWAYS_INLINE V* vtable() const noexcept {return ((_VTBL**)this)[0]; } \
 _FAT_ALWAYS_INLINE void* vdata() const noexcept {return ((_VTBL**)this)[1]; }
+
+
+namespace detail {
+
+template<typename T, typename U> struct compat : std::false_type {};
+template<typename R, typename C, typename I, typename...Args>
+struct compat<R(C::*)(Args...), R(I::*)(Args...)> : std::true_type {};
+
+template<typename _User>
+_User* cast(void* self, bool) {return (_User*)self;}
+template<typename _User, typename T>
+T* cast(void* self, T _User::*member) {return &(((_User*)self)->*member);}
+template<typename _User, typename T>
+T* cast(void* self, T* _User::*member) {return ((_User*)self)->*member;}
+
+#define _FAT_CAST() fatcom::detail::cast<_User>(_self, _offset::value)
+#define _FAT_CAST_T() std::remove_pointer_t<decltype(_FAT_CAST())>
+#define _FAT_CHECK_COMPAT(name) static_assert( \
+fatcom::detail::compat<decltype(&_FAT_CAST_T()::name), decltype(&_IFACE::name)>::value, \
+"Method incompatible with interface: " #name \
+);
+
+}
 
 struct IUnknown_VTable {
     // MUST: increment refcount on self if cast is OK (and addRef == true)
@@ -90,7 +116,7 @@ constexpr void PopulateVTable(VTableOf<IFace>& result) {
     }
     using Thunks = ThunksOf<IFace>;
     if constexpr (!std::is_void_v<Thunks>) {
-        Thunks::template PopulateFor<User, typename IFace::offset>(result);
+        Thunks::template PopulateFor<User, OffsetOf<IFace>>(result);
     }
 }
 
@@ -140,118 +166,18 @@ constexpr IUnknown_VTable _GetVTableFor(TypeList<IFaces...>) {
 template<typename User>
 inline constexpr IUnknown_VTable VTableFor = _GetVTableFor<User>(typename User::FatInterfaces{});
 
-template<typename T>
-class InterfacePtr final: protected IFaceOf<T>
+}
+
+#include "fatcom_iptr.hpp"
+
+namespace fatcom
 {
-    template<typename> friend class InterfacePtr;
 
-    const VTableOf<T>* vtbl;
-    void* data;
-
-    template<typename U>
-    void copyFrom(InterfacePtr<U> const& other) {
-        vtbl = other.vtbl;
-        data = other.data;
-        if (vtbl) this->AddRef();
-    }
-    template<typename U>
-    void moveFrom(InterfacePtr<U>& other) {
-        vtbl = std::exchange(other.vtbl, nullptr);
-        data = std::exchange(other.data, nullptr);
-    }
-public:
-    template<typename X, bool is = true>
-    using if_compatible = std::enable_if_t<std::is_convertible_v<IFaceOf<X>*, IFaceOf<T>*> == is, int>;
-
-    InterfacePtr() noexcept : vtbl(nullptr), data(nullptr) {}
-
-    template<typename U, typename = typename U::FatInterfaces>
-    InterfacePtr(U* object) noexcept : InterfacePtr(object, &VTableFor<U>) {}
-
-    InterfacePtr(void* object, const VTableOf<T>* vtbl, bool ref = true) noexcept :
-        vtbl(vtbl),
-        data(object)
-    {
-        if (ref) this->AddRef();
-    }
-
-    const VTableOf<T>* vtable() const noexcept {
-        return vtbl;
-    }
-
-    void* leak() noexcept {
-        auto res = data;
-        vtbl = nullptr;
-        data = nullptr;
-        return res;
-    }
-
-    template<typename Other, if_compatible<Other, false> = 1>
-    InterfacePtr(InterfacePtr<Other> const& other) noexcept {
-        if (other.data) {
-            vtbl = (const VTableOf<T>*)other.QueryInterface(T::IID, true);
-            data = vtbl ? other.get() : nullptr;
-        }
-    }
-    template<typename Other, if_compatible<Other, false> = 1>
-    InterfacePtr(InterfacePtr<Other>&& other) noexcept {
-        if (other.data) {
-            vtbl = (const VTableOf<T>*)other.QueryInterface(T::IID, false);
-            data = vtbl ? other.get() : nullptr;
-            other.vtbl = nullptr;
-            other.data = nullptr;
-        }
-    }
-
-    IFaceOf<T>* operator->() const noexcept {
-        return (IFaceOf<T>*)this;
-    }
-
-    IFaceOf<T>& operator*() const noexcept {
-        return (IFaceOf<T>&)*this;
-    }
-
-    void* get() const {
-        return data;
-    }
-
-    template<typename U, if_compatible<U> = 1>
-    InterfacePtr(InterfacePtr<U> const& other) noexcept { copyFrom(other); }
-
-    template<typename U, if_compatible<U> = 1>
-    InterfacePtr& operator=(InterfacePtr<U> const& other) noexcept {
-        if (this != &other) {
-            if (vtbl) this->Release();
-            copyFrom(other);
-        }
-        return *this;
-    }
-
-    template<typename U, if_compatible<U> = 1>
-    InterfacePtr(InterfacePtr<U>&& other) noexcept { moveFrom(other); }
-
-    template<typename U, if_compatible<U> = 1>
-    InterfacePtr& operator=(InterfacePtr<U>&& other) noexcept {
-        if (this != &other) {
-            if (vtbl) this->Release();
-            moveFrom(other);
-        }
-        return *this;
-    }
-
-    template<typename Any>
-    bool operator==(InterfacePtr<Any> const& other) const noexcept {
-        return data == other.data;
-    }
-
-    explicit operator bool() const noexcept {
-        return vtbl;
-    }
-
-    ~InterfacePtr() {
-        if (vtbl) this->Release();
-    }
-};
+namespace detail
+{
+template<typename _User, typename T>
+IFaceOf<T>* cast(void* self, InterfacePtr<T> _User::*member) {return (((_User*)self)->*member).operator->();}
+}
 
 using IUnknownPtr = InterfacePtr<IUnknown>;
 
@@ -261,237 +187,12 @@ struct Aggregate : IFace {
     using offset = Aggregate;
 };
 
-#define ALLOW_THIN_PTR(T) \
-using fatcom_thinnable = int; \
-const void* _VIunk = &fatcom::VTableFor<T>; \
-friend void __check_thinv(T*) {static_assert(offsetof(T, _VIunk) == 0, "ALLOW_THIN_PTR() must be first member"); }
-
-// First member of referenced class must be a pointer to any VTable
-class ThinPtr {
-    void* data;
-
-    IUnknownPtr unk(bool ref = false) const noexcept {
-        return data ? IUnknownPtr(data, *(IUnknown_VTable**)data, ref) : IUnknownPtr{};
-    }
-    void unref() {
-        unk(false); //Release at end of line
-    }
-    void ref() {
-        unk(true).leak(); // AddRef but no Release
-    }
-public:
-    IUnknownPtr GetUnknown() const noexcept {
-        return unk(true);
-    }
-    ThinPtr() noexcept : data(nullptr) {}
-    static ThinPtr CreateUnsafe(void* data) noexcept {
-        ThinPtr res;
-        res.data = data;
-        res.ref();
-        return res;
-    }
-    void* get() const noexcept {
-        return data;
-    }
-    template<typename T, typename T::fatcom_thinnable = 1>
-    ThinPtr(T* data) noexcept : data(data) {
-        ref();
-    }
-    ThinPtr(ThinPtr const& other) noexcept : data(other.data) {
-        ref();
-    }
-    ThinPtr& operator=(ThinPtr const& other) noexcept {
-        if (this != &other) {
-            unref(); //Release
-            data = other.data;
-            ref();
-        }
-        return *this;
-    }
-    ThinPtr(ThinPtr&& other) noexcept : data(std::exchange(other.data, nullptr)) {}
-    ThinPtr& operator=(ThinPtr&& other) noexcept {
-        std::swap(*this, other);
-        return *this;
-    }
-    explicit operator bool() const noexcept {
-        return data;
-    }
-    bool operator==(const ThinPtr& other) const noexcept {
-        return data == other.data;
-    }
-    ~ThinPtr() {
-        unref();
-    }
-};
-
 }
+
+#include "fatcom_thin.hpp"
 
 #ifndef FATCOM_NO_MACROS
+#include "fatcom_macros.hpp"
+#endif // FATCOM_NO_MACROS
 
-#define FAT_UUID(T, uuid) \
-struct T; \
-constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
-
-#define FAT_INTERFACE(T, ...) \
-    struct T; \
-    REGISTER_INFO(T, void); \
-    struct T##_VTable : fatcom::IUnknown_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
-    DESCRIBE(#T, T##_VTable, void) { MAKE_DESCRIBE(__VA_ARGS__)  } \
-    struct T##_IFace : fatcom::IUnknown_IFace { IMPLEMENT_FAT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
-    struct T##_Thunk { \
-    using _IFACE = T##_IFace; \
-    MAKE_CONCRETES(__VA_ARGS__) \
-    template<typename _User, typename _offset> \
-    static constexpr void PopulateFor(T##_VTable& _res) { \
-        USE_CONCRETES(__VA_ARGS__) } \
-    }; \
-    using T##Ptr = fatcom::InterfacePtr<T>;
-
-
-#define FAT_INTERFACE_INHERIT(Parent, T, ...) \
-    struct T; struct Parent; \
-    REGISTER_INFO(T, Parent); \
-    struct T##_VTable : Parent##_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
-    DESCRIBE(#T, T##_VTable, void) { PARENT(Parent##_VTable); MAKE_DESCRIBE(__VA_ARGS__)  } \
-    struct T##_IFace : Parent##_IFace { IMPLEMENT_FAT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
-    struct T##_Thunk { \
-    using _IFACE = T##_IFace; \
-    MAKE_CONCRETES(__VA_ARGS__) \
-    template<typename _User, typename _offset> \
-    static constexpr void PopulateFor(T##_VTable& _res) { \
-        Parent##_Thunk::PopulateFor<_User, _offset>(_res); USE_CONCRETES(__VA_ARGS__) } \
-    }; \
-    using T##Ptr = fatcom::InterfacePtr<T>;
-
-#define FAT_IMPLEMENTS(...) \
-    using FatInterfaces = fatcom::TypeList<__VA_ARGS__>;
-
-
-
-
-
-///// Macro magic part:
-
-// struct Test_VTable {
-//     void (*method1)(void* self, int);
-// };
-
-// + DESCRIBE() fot VTable
-
-// struct Test_IFace {
-//     void method1(int x) { return (_vtbl)->method1(_data, x); }
-// };
-
-// + Creator of concrete func ptrs
-
-/////////
-
-#define REGISTER_INFO(T, par) \
-struct T##_VTable; struct T##_IFace; struct T##_Thunk; \
-struct T { \
-    using vtable = T##_VTable; \
-    using parent = par; \
-    using iface = T##_IFace; \
-    using thunks = T##_Thunk; \
-    static constexpr fatcom::UUID IID = T##_UUID;\
-    using offset = fatcom::_self; \
-};
-
-#define _DOCHOOSE_1_OR_1(prefix) BOOST_PP_CAT(prefix, 1)
-#define _DOCHOOSE_1_OR_MORE(prefix) BOOST_PP_CAT(prefix, MORE)
-#define _DOCHOOSE_1_OR_2 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_3 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_4 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_5 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_6 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_7 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_8 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_9 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_10 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_11 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_12 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_13 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_14 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_15 _DOCHOOSE_1_OR_MORE
-#define _DOCHOOSE_1_OR_16 _DOCHOOSE_1_OR_MORE
-#define _CHOOSE_1_OR_MORE(prefix, ...) BOOST_PP_OVERLOAD(_DOCHOOSE_1_OR_, 1,##__VA_ARGS__)(prefix)
-
-#define _OPEN_TYPE(t) t
-#define _CHOP_TYPE(t) std::forward<t>(
-#define _METHOD_SIG_ARGS(_, __, n, arg) BOOST_PP_COMMA_IF(n) _OPEN_TYPE arg
-#define METHOD_SIG(...) BOOST_PP_SEQ_FOR_EACH_I(_METHOD_SIG_ARGS, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
-
-#define _METHOD_ARGS(_, __, n, arg) BOOST_PP_COMMA_IF(n) _CHOP_TYPE arg)
-#define METHOD_CALL(...) BOOST_PP_SEQ_FOR_EACH_I(_METHOD_ARGS, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
-
-#define IFACE_METHOD_DO_1(ret, name) \
-ret name() { \
-    return vtable()->name(vdata()); \
-}
-#define IFACE_METHOD_DO_MORE(ret, name, ...) \
-ret name(METHOD_SIG(__VA_ARGS__)) { \
-    return vtable()->name(vdata(), METHOD_CALL(__VA_ARGS__)); \
-}
-#define IFACE_METHOD_DO(ret, name, ...) _CHOOSE_1_OR_MORE(IFACE_METHOD_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
-#define IFACE_METHOD(_, __, method) IFACE_METHOD_DO method
-#define MAKE_IFACE(...) \
-    BOOST_PP_SEQ_FOR_EACH(IFACE_METHOD, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
-
-#define _VTABLE_METHOD_1(ret, name) auto (*name)(void* iface) -> ret;
-#define _VTABLE_METHOD_MORE(ret, name, ...) auto (*name)(void* iface, METHOD_SIG(__VA_ARGS__)) -> ret;
-#define _VTABLE_METHOD(ret, name, ...) _CHOOSE_1_OR_MORE(_VTABLE_METHOD_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
-#define VTABLE_METHOD(_, __, arg) _VTABLE_METHOD arg
-#define MAKE_VTABLE(...) \
-    BOOST_PP_SEQ_FOR_EACH(VTABLE_METHOD, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
-
-#define ADD_METHOD_DESC_DO(ret, name, ...) MEMBER(BOOST_PP_STRINGIZE(name), &_::name);
-#define ADD_METHOD_DESC(_, __, method) ADD_METHOD_DESC_DO method
-#define MAKE_DESCRIBE(...) \
-    BOOST_PP_SEQ_FOR_EACH(ADD_METHOD_DESC, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
-
-namespace fatcom::detail {
-
-template<typename T, typename U> struct compat : std::false_type {};
-template<typename R, typename C, typename I, typename...Args>
-struct compat<R(C::*)(Args...), R(I::*)(Args...)> : std::true_type {};
-
-template<typename _User>
-_User* cast(void* self, bool) {return (_User*)self;}
-template<typename _User, typename T>
-T* cast(void* self, T _User::*member) {return &(((_User*)self)->*member);}
-template<typename _User, typename T>
-T* cast(void* self, T* _User::*member) {return ((_User*)self)->*member;}
-template<typename _User, typename T>
-IFaceOf<T>* cast(void* self, InterfacePtr<T> _User::*member) {return (((_User*)self)->*member).operator->();}
-
-}
-
-#define _FAT_CAST() fatcom::detail::cast<_User>(_self, _offset::value)
-#define _FAT_CAST_T() std::remove_pointer_t<decltype(_FAT_CAST())>
-#define _FAT_CHECK_COMPAT(name) \
-static_assert(\
-fatcom::detail::compat<decltype(&_FAT_CAST_T()::name), decltype(&_IFACE::name)>::value, \
-"Method incompatible with interface: " #name \
-);
-
-#define MAKE_CONCRETE_PTR_DO_1(ret, name) \
-template<typename _User, typename _offset> \
-static ret name(void* _self){ _FAT_CHECK_COMPAT(name) \
-    return _FAT_CAST()->name(); }
-#define MAKE_CONCRETE_PTR_DO_MORE(ret, name, ...) \
-template<typename _User, typename _offset> \
-static ret name(void* _self, METHOD_SIG(__VA_ARGS__)){ _FAT_CHECK_COMPAT(name) \
-    return _FAT_CAST()->name(METHOD_CALL(__VA_ARGS__)); }
-#define MAKE_CONCRETE_PTR_DO(ret, name, ...) _CHOOSE_1_OR_MORE(MAKE_CONCRETE_PTR_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
-#define MAKE_CONCRETE_PTR(_, __, method) MAKE_CONCRETE_PTR_DO method
-#define MAKE_CONCRETES(...) \
-BOOST_PP_SEQ_FOR_EACH(MAKE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
-
-#define USE_CONCRETE_PTR_DO(ret, name, ...) _res.name = name<_User, _offset>;
-#define USE_CONCRETE_PTR(_, __, method) USE_CONCRETE_PTR_DO method
-#define USE_CONCRETES(...) \
-    BOOST_PP_SEQ_FOR_EACH(USE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
-
-/////////////
-
-#endif
+#endif // _FATCOM_HPP
