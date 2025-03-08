@@ -60,8 +60,7 @@ T* cast(void* self, T* _User::*member) {return ((_User*)self)->*member;}
 #define _FAT_CAST_T() std::remove_pointer_t<decltype(_FAT_CAST())>
 #define _FAT_CHECK_COMPAT(name) static_assert( \
 fatcom::detail::compat<decltype(&_FAT_CAST_T()::name), decltype(&_IFACE::name)>::value, \
-"Method incompatible with interface: " #name \
-);
+"Method incompatible with interface: " #name);
 
 }
 
