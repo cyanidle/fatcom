@@ -20,11 +20,11 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
     struct T##_VTable : fatcom::IUnknown_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { MAKE_DESCRIBE(__VA_ARGS__)  } \
     struct T##_IFace : fatcom::IUnknown_IFace { IMPLEMENT_FAT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
+    template<typename _User, typename _offset> \
     struct T##_Thunk { \
     using _IFACE = T##_IFace; \
     MAKE_CONCRETES(__VA_ARGS__) \
-    template<typename _User, typename _offset> \
-    static constexpr void PopulateFor(T##_VTable& _res) { \
+    static constexpr void PopulateThunks(T##_VTable& _res) { \
         USE_CONCRETES(__VA_ARGS__) } \
     }; \
     using T##Ptr = fatcom::InterfacePtr<T>;
@@ -36,30 +36,25 @@ constexpr fatcom::UUID T##_UUID = fatcom::ParseIID(uuid);
     struct T##_VTable : Parent##_VTable { MAKE_VTABLE(__VA_ARGS__)  }; \
     DESCRIBE(#T, T##_VTable, void) { PARENT(Parent##_VTable); MAKE_DESCRIBE(__VA_ARGS__)  } \
     struct T##_IFace : Parent##_IFace { IMPLEMENT_FAT_VTABLE(T##_VTable); MAKE_IFACE(__VA_ARGS__) }; \
+    template<typename _User, typename _offset> \
     struct T##_Thunk { \
     using _IFACE = T##_IFace; \
     MAKE_CONCRETES(__VA_ARGS__) \
-    template<typename _User, typename _offset> \
-    static constexpr void PopulateFor(T##_VTable& _res) { \
-        Parent##_Thunk::PopulateFor<_User, _offset>(_res); USE_CONCRETES(__VA_ARGS__) } \
+    static constexpr void PopulateThunks(T##_VTable& _res) { \
+        Parent##_Thunk<_User, _offset>::PopulateThunks(_res); USE_CONCRETES(__VA_ARGS__) } \
     }; \
     using T##Ptr = fatcom::InterfacePtr<T>;
 
-#define FAT_IMPLEMENTS(...) \
-    using FatInterfaces = fatcom::TypeList<__VA_ARGS__>;
-
-
-
-
-
 
 #define REGISTER_INFO(T, par) \
-struct T##_VTable; struct T##_IFace; struct T##_Thunk; \
+struct T##_VTable; struct T##_IFace; \
+template<typename User, typename Offset> struct T##_Thunk; \
 struct T { \
     using vtable = T##_VTable; \
     using parent = par; \
     using iface = T##_IFace; \
-    using thunks = T##_Thunk; \
+    template<typename User, typename Offset>\
+    using thunks = T##_Thunk<User, Offset>; \
     static constexpr fatcom::UUID IID = T##_UUID;\
     using offset = fatcom::_self; \
 };
@@ -117,11 +112,9 @@ ret name(METHOD_SIG(__VA_ARGS__)) { \
     BOOST_PP_SEQ_FOR_EACH(ADD_METHOD_DESC, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
 
 #define MAKE_CONCRETE_DO_1(ret, name) \
-template<typename _User, typename _offset> \
 static ret name(void* _self){ _FAT_CHECK_COMPAT(name) \
     return _FAT_CAST()->name(); }
 #define MAKE_CONCRETE_DO_MORE(ret, name, ...) \
-template<typename _User, typename _offset> \
 static ret name(void* _self, METHOD_SIG(__VA_ARGS__)){ _FAT_CHECK_COMPAT(name) \
     return _FAT_CAST()->name(METHOD_CALL(__VA_ARGS__)); }
 #define MAKE_CONCRETE_DO(ret, name, ...) _CHOOSE_1_OR_MORE(MAKE_CONCRETE_DO_,##__VA_ARGS__)(ret, name,##__VA_ARGS__)
@@ -129,7 +122,7 @@ static ret name(void* _self, METHOD_SIG(__VA_ARGS__)){ _FAT_CHECK_COMPAT(name) \
 #define MAKE_CONCRETES(...) \
 BOOST_PP_SEQ_FOR_EACH(MAKE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))
 
-#define USE_CONCRETE_PTR_DO(ret, name, ...) _res.name = name<_User, _offset>;
+#define USE_CONCRETE_PTR_DO(ret, name, ...) _res.name = &name;
 #define USE_CONCRETE_PTR(_, __, method) USE_CONCRETE_PTR_DO method
 #define USE_CONCRETES(...) \
     BOOST_PP_SEQ_FOR_EACH(USE_CONCRETE_PTR, _, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))

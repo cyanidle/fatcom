@@ -23,13 +23,10 @@ template<typename T>
 using VTableOf = typename InfoOf<T>::vtable;
 
 template<typename T>
-using ThunksOf = typename InfoOf<T>::thunks;
-
-template<typename T>
 using ParentOf = typename InfoOf<T>::parent;
 
-template<typename T>
-using OffsetOf = typename InfoOf<T>::offset;
+template<typename T, typename User>
+using ThunksOf = typename InfoOf<T>::template thunks<User, typename InfoOf<T>::offset>;
 
 #ifdef _MSC_VER
 #define _FAT_ALWAYS_INLINE __forceinline
@@ -64,6 +61,9 @@ fatcom::detail::compat<decltype(&_FAT_CAST_T()::name), decltype(&_IFACE::name)>:
 
 }
 
+#define FAT_IMPLEMENTS(...) \
+using FatInterfaces = fatcom::TypeList<__VA_ARGS__>;
+
 struct IUnknown_VTable {
     // MUST: increment refcount on self if cast is OK (and addRef == true)
     const IUnknown_VTable* (*QueryInterface)(void* self, UUID iid, bool addRef) noexcept;
@@ -92,6 +92,7 @@ struct IUnknown {
     using parent = void;
     using vtable = IUnknown_VTable;
     using iface = IUnknown_IFace;
+    template<typename User, typename Offset>
     using thunks = void;
     static constexpr UUID IID = {0, 0xC000000000000046};
     using offset = _self;
@@ -113,9 +114,9 @@ constexpr void PopulateVTable(VTableOf<IFace>& result) {
     if constexpr (!std::is_void_v<Parent>) {
         PopulateVTable<Parent, User>(result);
     }
-    using Thunks = ThunksOf<IFace>;
+    using Thunks = ThunksOf<IFace, User>;
     if constexpr (!std::is_void_v<Thunks>) {
-        Thunks::template PopulateFor<User, OffsetOf<IFace>>(result);
+        Thunks::PopulateThunks(result);
     }
 }
 
